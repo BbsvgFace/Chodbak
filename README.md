@@ -1,10 +1,18 @@
 # CHODBAK / Chodi mat kar
 
-A desi pixel-art focus watchdog for Windows. Leave the apps you're meant to be working in and a strict desi havaldar shouts at you, out loud, in your own language (12 Indian languages + English, voiced by [Sarvam AI](https://www.sarvam.ai/)).
+A desi pixel-art focus watchdog. Leave your work and a strict desi havaldar shouts at you, out loud, in your own language (12 Indian languages + English, voiced by [Sarvam AI](https://www.sarvam.ai/)).
 
-## Download (Windows 10/11)
+## Try it in your browser: **[chodbak.vercel.app](https://chodbak.vercel.app)**
 
-1. **[Download Chodbak.exe](https://github.com/BbsvgFace/Chodbak/raw/main/download/Chodbak.exe)** (or open the `download` folder above and click *Download raw file*).
+No install. Pick your language, put your study material in the duty post (notes, a PDF or a YouTube lecture) and click **Report for duty**. Leave the tab and he strikes: shouting from the background, a notification, and full-screen pixel overlays waiting when you come back. **Float guard on top** (Chrome/Edge) keeps a small guard hovering over your other apps.
+
+Paste your own free Sarvam key ([dashboard.sarvam.ai](https://dashboard.sarvam.ai) → API Keys) for live taunts, the "sorry mummy" mic check and fresh voices; it's stored only in your browser and sent only to api.sarvam.ai. Without a key it still shouts pre-recorded regional taunts. Browsers can only see their own tab, so for watching desktop apps (VS Code, Notion...) use the Windows app below.
+
+## Windows app
+
+The desktop version watches any app or window, not just a browser tab.
+
+1. **Chodbak.exe: coming soon** (it will appear in the `download` folder). Until then, run it from source (below).
 2. Put it in its own folder, e.g. `Documents\Chodbak`. Your settings are saved next to it.
 3. Double-click it. Windows SmartScreen may say *"Windows protected your PC"* because the exe isn't code-signed: click **More info → Run anyway**. Some antivirus tools also flag PyInstaller apps by mistake; the full source is in this repo if you'd rather run that.
 4. First run asks for:
