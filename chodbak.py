@@ -1,15 +1,18 @@
 """CHODBAK - chodi mat kar! A pixel-art drill guard that barks when you leave your focus apps.
 
-usage:  python chodbak.py "Visual Studio Code" "Notion"
+usage:  python chodbak.py                    # or double-click Chodbak.exe; first run asks everything
+        python chodbak.py "Visual Studio Code" "Notion"   # override the saved targets
         python chodbak.py --test 3          # preview one warning level
-        python chodbak.py --setup ...       # redo the first-run questions
-        python chodbak.py --lang tamil ...  # override the saved language once
+        python chodbak.py --setup           # redo the first-run questions
+        python chodbak.py --lang tamil      # override the saved language once
+        python chodbak.py --make-taunts     # re-record the taunt bank (all languages)
 
 Targets match (case-insensitive substring) against the window title or the exe name,
 so "YouTube" allows one browser tab and "chrome.exe" allows the whole browser.
-The Sarvam key comes from SARVAM_API_KEY in .env (via chat.get_api_key).
+The Sarvam key comes from SARVAM_API_KEY in .env next to the script/exe (asked for on first run).
 
-First run asks what language you speak at home and for a photo (it doesn't say why).
+First run asks for a Sarvam key, the language you speak at home, the apps to stay in,
+and a photo (it doesn't say why).
 Every taunt is spoken out loud in your language, after a meme sound from sfx/.
 Level 1  SAAVDHAN    pixel warning + FAAAA!
 Level 2  NALAYAK     nastier taunt + cat laugh + your photo, framed and disappointed in you,
@@ -20,7 +23,9 @@ Level 3  KHATRA      metal pipe, yanks you back, cooker siti, flying chappal, th
 Stay focused 25 min straight and you earn a chai break.
 """
 import argparse
+import array
 import base64
+import io
 import ctypes
 import json
 import math
@@ -29,10 +34,12 @@ import queue
 import random
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import tkinter as tk
+import wave
 import winsound
 from ctypes import wintypes
 from pathlib import Path
@@ -40,13 +47,16 @@ from tkinter import filedialog
 
 from sarvamai import SarvamAI
 
-from chat import get_api_key
-
-HERE = Path(__file__).parent
+# Built with PyInstaller, user files (.env, prefs, photo) sit next to the exe and the bundled
+# sounds/taunts are unpacked to sys._MEIPASS. From source, both are this folder.
+HERE = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+ASSETS = Path(getattr(sys, "_MEIPASS", HERE / "web"))  # web/ serves the same sounds + taunts to the website
+ENV = HERE / ".env"
 FACE = HERE / "chodbak_face.png"  # the "registration" photo, git-ignored
 PREFS = HERE / "chodbak_prefs.json"
-SFX = HERE / "sfx"  # meme mp3s; drop extra ones in here and nags pick them at random
+SFX = ASSETS / "sfx"  # meme mp3s; drop extra ones in here and nags pick them at random
 SFX_MAX_MS = 2500  # clips are padded with silence; cut them so the guard's voice follows fast
+TAUNTS = ASSETS / "taunts"  # pre-recorded bank: taunts/<lang>/NN.mp3 + taunts.json, made by --make-taunts
 
 # name -> (how the model should write it, Sarvam language code, button label)
 LANGS = {
@@ -63,6 +73,10 @@ LANGS = {
     "tamil": ("Tamil in Tamil script", "ta-IN", "தமிழ்"),
     "telugu": ("Telugu in Telugu script", "te-IN", "తెలుగు"),
 }
+# a Bulbul v3 voice per language, so the guard sounds a bit more local
+VOICES = {"hinglish": "shubh", "hindi": "aditya", "english": "rahul", "bengali": "soham", "gujarati": "manan",
+          "kannada": "gokul", "malayalam": "mani", "marathi": "rupali", "odia": "advait", "punjabi": "kabir",
+          "tamil": "vijay", "telugu": "kavitha"}
 GRACE = 1.0  # seconds away before a strike, so alt-tab flicker doesn't count
 NAG_EVERY = 8  # level 3: seconds between re-yanks while you're still away
 RESET_AFTER = 600  # seconds of unbroken focus that wipe your strikes
@@ -88,10 +102,15 @@ FAMILY = [
 ]
 
 MOODS = {
-    1: "a stern first warning",
-    2: "mocking and guilt-tripping: someone they love is watching right now and is deeply disappointed",
-    3: "maximum fury, screaming",
+    1: "a stern, firm first warning",
+    2: "deeply disappointed and guilt-tripping, like a parent who expected better: start with a heavy sigh "
+       "(Haaye..., Hmm...), use slow trailing pauses (...), mention someone they love watching right now",
+    3: "maximum fury, SHOUTING: short punchy bursts, lots of exclamation marks, a few words in CAPS, "
+       "stretched words like Kyaaaa?! and Nalaaayak!",
 }
+# how the voice delivers each level: Bulbul v3 pace + temperature (expressiveness, max 1.0), then a volume boost
+EMOTION = {1: dict(pace=1.15, temperature=0.6), 2: dict(pace=0.9, temperature=0.9), 3: dict(pace=1.35, temperature=1.0)}
+GAIN = {1: 1.0, 2: 1.0, 3: 2.5}  # >1 compresses + soft-clips: sounds like yelling into a megaphone
 FALLBACK = {
     1: "Saavdhan! Back to work right now. Chodi mat kar!",
     2: "Oye nalayak! Sharma ji ka beta never opens other tabs. Dekh, sab disappointed hain.",
@@ -164,6 +183,27 @@ user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 user32.IsIconic.argtypes = [wintypes.HWND]
 
 
+def load_key():
+    """SARVAM_API_KEY from .env next to the script/exe, else the environment, else None."""
+    if ENV.exists():
+        for line in ENV.read_text(encoding="utf-8-sig").splitlines():
+            name, sep, value = line.partition("=")
+            if sep and name.strip() == "SARVAM_API_KEY" and value.strip():
+                return value.strip().strip("\"'")
+    return os.environ.get("SARVAM_API_KEY", "").strip() or None
+
+
+def load_prefs():
+    try:
+        return json.loads(PREFS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_prefs(**changes):
+    PREFS.write_text(json.dumps({**load_prefs(), **changes}, ensure_ascii=False), encoding="utf-8")
+
+
 def foreground():
     """(hwnd, title, exe name, pid) of the window you're looking at."""
     hwnd = user32.GetForegroundWindow()
@@ -230,17 +270,63 @@ def record(path, secs=LISTEN_SECS):
 _sfx_ids = iter(range(10**9))
 
 
+def play_mp3(path, max_ms=None):
+    """Play an mp3 via Windows MCI, optionally cut short. Blocks, so call it off the UI thread."""
+    alias = f"sfx{next(_sfx_ids)}"
+    if mci(f'open "{path}" type mpegvideo alias {alias}', None, 0, None) == 0:
+        mci(f"set {alias} time format milliseconds", None, 0, None)
+        mci(f"play {alias} from 0" + (f" to {max_ms}" if max_ms else "") + " wait", None, 0, None)
+        mci(f"close {alias}", None, 0, None)
+
+
 def sfx(name=None):
-    """Play sfx/<name>.mp3 (or a random one) via Windows MCI. Blocks, so call it off the UI thread."""
+    """Play sfx/<name>.mp3, or a random one."""
     files = [SFX / f"{name}.mp3"] if name else list(SFX.glob("*.mp3"))
     files = [f for f in files if f.exists()]
-    if not files:
-        return
-    alias = f"sfx{next(_sfx_ids)}"
-    if mci(f'open "{random.choice(files)}" type mpegvideo alias {alias}', None, 0, None) == 0:
-        mci(f"set {alias} time format milliseconds", None, 0, None)
-        mci(f"play {alias} from 0 to {SFX_MAX_MS} wait", None, 0, None)
-        mci(f"close {alias}", None, 0, None)
+    if files:
+        play_mp3(random.choice(files), SFX_MAX_MS)
+
+
+def bank_taunt(lang):
+    """A random pre-recorded (text, mp3 path) from taunts/<lang>/, or None if that bank isn't made yet."""
+    index = TAUNTS / lang / "taunts.json"
+    if not index.exists():
+        return None
+    texts = json.loads(index.read_text(encoding="utf-8"))
+    i = random.randrange(len(texts))
+    return texts[i], TAUNTS / lang / f"{i:02}.mp3"
+
+
+def make_taunts(client, lang, n=8):
+    """Have Sarvam write n region-flavoured taunts and record each in the regional voice."""
+    r = client.chat.completions(
+        model="sarvam-105b-conversations",
+        max_tokens=3000,
+        response_format={"type": "json_object"},
+        messages=[{"role": "system", "content": (
+            "You write lines for CHODBAK, a furious old-school desi army havaldar and PT sir in a consensual "
+            "productivity game, who scolds a student for getting distracted from work. Catchphrase: \"Chodi mat kar!\". "
+            "Swearing is fine; no slurs, no threats of real violence against people, no foreign words other than English."
+        )}, {"role": "user", "content": (
+            f'Return JSON {{"taunts": [...]}} with {n} different taunts in {LANGS[lang][0]}. '
+            + ("Write them in that script, not romanized: Latin letters only for English words. "
+               if lang not in ("hinglish", "english") else "") +
+            "Each one or two short sentences, written to be SHOUTED aloud in fury: exclamation marks, a few words "
+            "in CAPS, stretched words. Make them regional: idioms, family words for mum and dad, foods, "
+            "films, festivals and exam pressure typical of that language's region. Mix in phone/reels distraction, "
+            "the student's AI coding agent being held hostage, and mummy finding out."
+        )}],
+    )
+    texts = [t.strip() for t in json.loads(r.choices[0].message.content)["taunts"] if t.strip()][:n]
+    out = TAUNTS / lang
+    out.mkdir(parents=True, exist_ok=True)
+    for i, text in enumerate(texts):
+        (out / f"{i:02}.mp3").write_bytes(speak(client, lang, text, level=3, codec="mp3"))  # nags are angry
+    (out / "taunts.json").write_text(json.dumps(texts, ensure_ascii=False, indent=1), encoding="utf-8")
+    mom = mom_line(client, lang)  # the last taunt too, so the web app can say it without a key
+    (out / "mom.mp3").write_bytes(speak(client, lang, mom, level=2, codec="mp3"))
+    (out / "mom.txt").write_text(mom, encoding="utf-8")
+    return texts
 
 
 def said_sorry_mummy(text):
@@ -276,6 +362,7 @@ def taunt(client, lang, level, fled_to, hostage=None):
         + threat +
         "Use only English and that Indian language: no German or any other foreign words. "
         "No slurs, no threats of real violence against people, no references to real wars. "
+        "It will be read aloud by a voice actor, so let punctuation carry the emotion (... for sighs, ! for shouting). "
         "At most 2 short sentences. Output only the line itself."
     )
     try:
@@ -300,16 +387,32 @@ def mom_line(client, lang):
         return MOM_HINGLISH
 
 
-def speak(client, lang, text):
-    """Text -> WAV bytes in the guard's voice (None if the API is unreachable)."""
+def speak(client, lang, text, level=1, codec="wav"):
+    """Text -> audio bytes in the guard's regional voice, delivered in that level's emotion (None if offline)."""
     try:
         r = client.text_to_speech.convert(
-            text=text[:2500], language_code=LANGS[lang][1], speaker="shubh", model="bulbul:v3",
-            pace=1.2, output_audio_codec="wav",
+            text=text[:2500], language_code=LANGS[lang][1], speaker=VOICES[lang], model="bulbul:v3",
+            output_audio_codec=codec, **EMOTION[level],
         )
-        return base64.b64decode("".join(r.audios))
+        audio = base64.b64decode("".join(r.audios))
     except Exception:
         return None
+    return louder(audio, GAIN[level]) if codec == "wav" else audio
+
+
+def louder(wav, gain):
+    """Boost a 16-bit WAV with tanh soft-clipping: quiet parts come up, peaks squash instead of crackling."""
+    if gain == 1:
+        return wav
+    with wave.open(io.BytesIO(wav)) as w:
+        params, frames = w.getparams(), w.readframes(w.getnframes())
+    samples = array.array("h", frames)
+    samples = array.array("h", (int(32000 * math.tanh(gain * s / 32768)) for s in samples))
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setparams(params)
+        w.writeframes(samples.tobytes())
+    return out.getvalue()
 
 
 def play(wav):
@@ -361,7 +464,8 @@ def draw_desi_frame(canvas, img):
 class Chodbak:
     def __init__(self, targets, lang, test=False):
         self.targets, self.lang, self.test = targets, lang, test
-        self.client = SarvamAI(api_subscription_key=get_api_key())
+        key = load_key()
+        self.client = SarvamAI(api_subscription_key=key) if key else None  # None until ask_key()
         self.root = tk.Tk()
         self.root.withdraw()
         self.q = queue.Queue()  # callables from worker threads, run on the UI thread
@@ -420,28 +524,34 @@ class Chodbak:
 
         def work():
             text = taunt(self.client, self.lang, level, self.bad_title, self.hostage)
-            wav = speak(self.client, self.lang, text)
+            wav = speak(self.client, self.lang, text, level) if text != FALLBACK[level] else None
+            banked = None if wav else bank_taunt(self.lang)  # API down: use a pre-recorded line
+            if banked:
+                text = banked[0]
             self.q.put(lambda: self.set_body(pid, text))
             meme.join()  # let the meme land before the guard starts talking
-            play(wav)
+            play_mp3(banked[1]) if banked else play(wav)
             self.last_taunt, self.last_wav = text, wav
             if level == 3:  # the last taunt
                 self.q.put(lambda: (self.set_body(pid, f"{text}\n\n{self.mom}"), self.calling_toast()))
-                play(speak(self.client, self.lang, self.mom))
+                play(speak(self.client, self.lang, self.mom, level=2))  # cold, disappointed, after all the shouting
 
         bg(work)
 
     def nag(self):
-        # ponytail: replays the last taunt's audio so nagging doesn't burn API calls
+        # a fresh pre-recorded taunt each nag (no API calls); without a bank, replay the last one
         self.last_nag = time.time()
         self.hostage_hp = min(self.hostage_hp + 1, len(HOSTAGE_STATES) - 1)
         yank_back(self.bad, self.last_good)
         bg(cooker_siti, 1)
-        bg(lambda: (sfx(), play(self.last_wav)))  # random meme from sfx/, then the guard again
+        banked = bank_taunt(self.lang)
+        if banked:
+            self.last_taunt = banked[0]
+        bg(lambda: (sfx(), play_mp3(banked[1]) if banked else play(self.last_wav)))  # meme, then the guard
         self.throw_chappal()
         if not self.popup:
             self.show_popup(3)
-            self.set_body(self.popup_id, f"{self.last_taunt}\n\n{self.mom}")
+        self.set_body(self.popup_id, f"{self.last_taunt}\n\n{self.mom}")
         self.refresh_hostage()
         self.popup.lift()
         self.shake()
@@ -668,17 +778,65 @@ class Chodbak:
         bg(ring)
 
     # --- first run ------------------------------------------------------
+    def text_step(self, header, prompt, button, save, secret=False, initial=""):
+        """Pixel dialog with one text box. save(text) returns True to close, False to keep asking."""
+        def ask(then):
+            w, col = self.guard_dialog("#d4af37", header)
+            tk.Label(col, text=prompt, font=PIX, fg="#ddd", bg=BG, justify="left").pack(anchor="w", pady=10)
+            row = tk.Frame(col, bg=BG)
+            row.pack(anchor="w")
+            entry = tk.Entry(row, font=PIX, width=42, bg="#22222c", fg="#fff", insertbackground="#fff",
+                             relief="flat", show="*" if secret else "")
+            entry.insert(0, initial)
+            entry.pack(side="left", ipady=6)
+
+            def done(_=None):
+                if save(entry.get().strip()):
+                    w.destroy()
+                    then()
+                else:
+                    entry.config(bg="#5a1e1e")
+
+            entry.bind("<Return>", done)
+            tk.Button(row, text=button, bg="#d4af37", fg="#000", command=done, **BTN).pack(side="left", padx=10)
+            self.place(w)
+            entry.focus_force()
+        return ask
+
+    def ask_key(self, then):
+        def save(key):
+            if not key:
+                return False
+            lines = [l for l in (ENV.read_text(encoding="utf-8-sig").splitlines() if ENV.exists() else [])
+                     if not l.startswith("SARVAM_API_KEY=")]
+            ENV.write_text("\n".join(lines + [f"SARVAM_API_KEY={key}"]) + "\n", encoding="utf-8")
+            self.client = SarvamAI(api_subscription_key=key)
+            return True
+        self.text_step("SARVAM KEY", "CHODBAK ki awaaz Sarvam AI se aati hai.\n\nFree key: dashboard.sarvam.ai > API Keys.\n"
+                       f"Paste it here. It is saved only in:\n{ENV}", "SAVE", save, secret=True)(then)
+
+    def ask_targets(self, then):
+        def save(text):
+            targets = [t.strip() for t in text.split(",") if t.strip()]
+            if targets:
+                self.targets = targets
+                save_prefs(targets=targets)
+            return bool(targets)
+        self.text_step("DUTY POST", "Kaunse apps / tabs mein rehna hai? Comma separated.\n\n"
+                       "Window title or exe name, e.g.  Visual Studio Code, Notion, chrome.exe",
+                       "LOCK IN", save, initial=", ".join(self.targets))(then)
+
     def pick_language(self, then):
         """Asks innocently. The answer decides which language mummy gets 'called' in."""
         w, col = self.guard_dialog("#d4af37", "NAYI BHARTI")
-        tk.Label(col, text="Recruit registration, step 1 of 2.\n\nGhar pe kaunsi bhasha bolte ho?",
+        tk.Label(col, text="Recruit registration.\n\nGhar pe kaunsi bhasha bolte ho?",
                  font=PIX, fg="#ddd", bg=BG, justify="left").pack(anchor="w", pady=10)
         grid = tk.Frame(col, bg=BG)
         grid.pack(anchor="w")
 
         def choose(name):
             self.lang = name
-            PREFS.write_text(json.dumps({"lang": name}))
+            save_prefs(lang=name)
             w.destroy()
             then()
 
@@ -691,7 +849,7 @@ class Chodbak:
     def register(self, then):
         """Asks for a photo and doesn't say why. It comes back at level 2."""
         w, col = self.guard_dialog("#d4af37", "NAYI BHARTI")
-        tk.Label(col, text="Recruit registration, step 2 of 2.\n\nUpload a photo of someone whose opinion\n"
+        tk.Label(col, text="Recruit registration, last step.\n\nUpload a photo of someone whose opinion\n"
                            "matters to you.\n\nKyun? Classified. Bas upload kar.",
                  font=PIX, fg="#ddd", bg=BG, justify="left").pack(anchor="w", pady=10)
         btns = tk.Frame(col, bg=BG)
@@ -733,21 +891,28 @@ class Chodbak:
 
     def start(self):
         self.prepare()
-        print(f"CHODBAK on duty ({self.lang}). Stay in: {', '.join(self.targets)}  (Ctrl+C to desert)")
+        print(f"CHODBAK on duty ({self.lang}). Stay in: {', '.join(self.targets)}")
+        print("Close this window (or Ctrl+C) to desert.")
         self.tick()
+
+    def test_drill(self, level):
+        self.prepare()
+        self.bad_title, self.strikes = "test drill", level - 1
+        self.root.after(300, self.strike)
 
     def run(self, test_level=None, setup=False):
         self.pump()
-        if test_level:
-            self.prepare()
-            self.bad_title, self.strikes = "test drill", test_level - 1
-            self.root.after(300, self.strike)
-        elif setup or not self.lang:
-            self.pick_language(lambda: self.register(self.start))
-        elif not FACE.exists():
-            self.register(self.start)
-        else:
-            self.start()
+        steps = [self.ask_key] if not self.client else []
+        if not test_level:
+            steps += [s for s, needed in ((self.pick_language, setup or not self.lang),
+                                          (self.ask_targets, setup or not self.targets),
+                                          (self.register, setup or not FACE.exists())) if needed]
+        finish = (lambda: self.test_drill(test_level)) if test_level else self.start
+
+        def next_step():
+            steps.pop(0)(next_step) if steps else finish()
+
+        next_step()
         try:
             self.root.mainloop()
         except KeyboardInterrupt:
@@ -756,13 +921,18 @@ class Chodbak:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="CHODBAK - chodi mat kar!")
-    p.add_argument("targets", nargs="*", help="window title or exe substrings you must stay in")
+    p.add_argument("targets", nargs="*", help="window title or exe substrings you must stay in (default: saved)")
     p.add_argument("--lang", choices=LANGS, help="override the language picked on first run")
     p.add_argument("--test", type=int, choices=[1, 2, 3], help="show one warning level and exit")
-    p.add_argument("--setup", action="store_true", help="redo the first-run language + photo questions")
+    p.add_argument("--setup", action="store_true", help="redo the first-run questions")
+    p.add_argument("--make-taunts", nargs="*", metavar="LANG", choices=LANGS,
+                   help="(re)generate the pre-recorded taunt bank for these languages, or all of them")
     a = p.parse_args()
-    if not a.targets and not a.test:
-        p.error('give at least one target, e.g. "Visual Studio Code"')
-    saved = json.loads(PREFS.read_text()).get("lang") if PREFS.exists() else None
-    lang = a.lang or saved or ("hinglish" if a.test else None)
-    Chodbak(a.targets, lang, test=bool(a.test)).run(a.test, a.setup)
+    if a.make_taunts is not None:
+        client = SarvamAI(api_subscription_key=load_key())
+        for name in a.make_taunts or LANGS:
+            print(name, len(make_taunts(client, name)), "taunts", flush=True)
+        raise SystemExit
+    prefs = load_prefs()
+    lang = a.lang or prefs.get("lang") or ("hinglish" if a.test else None)
+    Chodbak(a.targets or prefs.get("targets", []), lang, test=bool(a.test)).run(a.test, a.setup)

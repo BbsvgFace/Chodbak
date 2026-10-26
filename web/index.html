@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CHODBAK · Chodi mat kar</title>
+<meta name="description" content="A desi pixel-art focus watchdog that shouts at you in your own language when you leave your work. Voices by Sarvam AI.">
+<link rel="icon" id="favicon">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&display=swap">
+<style>
+  :root {
+    --bg: #14141c; --panel: #1d1d29; --line: #3a3a46; --ink: #f2e8cf; --muted: #9a9aa8;
+    --gold: #d4af37; --l1: #f5d742; --l2: #f59342; --l3: #e83b3b; --green: #7ee081; --wa: #25d366;
+    --pix: "VT323", "Consolas", monospace;
+    --indic: "Nirmala UI", "Noto Sans", "Noto Sans Devanagari", "Noto Sans Tamil", "Noto Sans Bengali", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--indic); }
+  body { min-height: 100vh; }
+  button { font-family: var(--pix); font-size: 22px; border: 0; padding: 8px 16px; cursor: pointer; background: var(--line); color: var(--ink); }
+  button:hover { filter: brightness(1.15); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--gold); color: #000; }
+  input, textarea { font: 18px var(--indic); background: #22222c; color: #fff; border: 2px solid var(--line); padding: 8px; width: 100%; }
+  input:focus, textarea:focus { outline: none; border-color: var(--gold); }
+  canvas.sprite { image-rendering: pixelated; }
+  .pix { font-family: var(--pix); }
+  .muted { color: var(--muted); }
+  .hidden { display: none !important; }
+
+  header { display: flex; gap: 16px; align-items: center; padding: 14px 16px; border-bottom: 4px solid var(--gold); background: var(--panel); flex-wrap: wrap; }
+  header h1 { margin: 0; font: 46px/1 var(--pix); color: var(--gold); letter-spacing: 6px; }
+  header .tag { font: 22px var(--pix); color: var(--l2); }
+  header .stats { margin-left: auto; font: 22px/1.2 var(--pix); text-align: right; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  .bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  #status { font: 22px var(--pix); padding: 8px 12px; background: var(--panel); border-left: 6px solid var(--muted); margin-bottom: 12px; }
+  #status.on { border-color: var(--green); color: var(--green); }
+  #status.alarm { border-color: var(--l3); color: var(--l3); }
+  .tabs button { font-size: 20px; }
+  .tabs button.active { background: var(--gold); color: #000; }
+  .post { background: var(--panel); border: 4px solid var(--line); min-height: 62vh; display: flex; flex-direction: column; }
+  .post > * { flex: 1; }
+  .post textarea { min-height: 60vh; border: 0; resize: vertical; }
+  .post iframe { width: 100%; min-height: 62vh; border: 0; background: #fff; }
+  .post .empty { display: grid; place-items: center; text-align: center; padding: 24px; font: 24px var(--pix); color: var(--muted); }
+  .levels { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin-top: 14px; }
+  .levels div { background: var(--panel); padding: 10px 12px; border-top: 4px solid; font-size: 15px; }
+  .levels b { font: 24px var(--pix); display: block; }
+  footer { text-align: center; padding: 20px 16px 40px; font-size: 14px; }
+  footer a { color: var(--gold); }
+
+  /* overlays */
+  .overlay { position: fixed; inset: 0; background: rgba(5,5,10,.82); display: grid; place-items: center; z-index: 50; padding: 16px; }
+  .card { background: var(--bg); border: 8px solid var(--gold); display: flex; gap: 22px; padding: 22px; max-width: 920px; width: 100%; max-height: 94vh; overflow: auto; box-shadow: 10px 10px 0 #000; }
+  .card .left { flex: none; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .card .right { flex: 1; min-width: 0; }
+  .card .small { font: 18px var(--pix); color: var(--muted); letter-spacing: 6px; }
+  .card h2 { margin: 0; font: 54px/1 var(--pix); }
+  .card .meta { font: 20px var(--pix); color: #aaa; }
+  .card .body { font: 700 22px/1.45 var(--indic); margin: 14px 0; white-space: pre-wrap; }
+  .card .catch { font: 32px var(--pix); }
+  .card .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; align-items: center; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 10px; }
+  .grid button { font: 700 18px var(--indic); padding: 10px 6px; }
+  .shake { animation: shake .55s linear; }
+  @keyframes shake { 0%,100% { transform: translate(0,0) } 10% { transform: translate(-16px,9px) } 20% { transform: translate(14px,-12px) } 30% { transform: translate(-12px,-8px) } 40% { transform: translate(16px,10px) } 50% { transform: translate(-9px,14px) } 60% { transform: translate(12px,-14px) } 70% { transform: translate(-15px,6px) } 80% { transform: translate(9px,12px) } 90% { transform: translate(-6px,-9px) } }
+  @media (max-width: 680px) { .card { flex-direction: column; } .grid { grid-template-columns: repeat(2, 1fr); } header .stats { margin-left: 0; text-align: left; } }
+
+  .toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 10px; z-index: 60; width: min(360px, calc(100vw - 32px)); }
+  .toast { background: var(--bg); border: 6px solid var(--wa); padding: 10px 12px; box-shadow: 6px 6px 0 #000; display: flex; gap: 12px; align-items: center; }
+  .toast .t { font: 26px var(--pix); }
+  .toast .m { font-size: 15px; }
+  .wa .who { color: #ffc300; font-weight: 700; font-size: 13px; margin-top: 6px; }
+  .chappal { position: fixed; z-index: 70; pointer-events: none; left: 0; top: 0; }
+  .face { border: 0; }
+</style>
+</head>
+<body>
+<header>
+  <canvas id="logo" class="sprite" width="16" height="16" style="width:64px;height:64px"></canvas>
+  <div>
+    <h1>CHODBAK</h1>
+    <div class="tag">CHODI MAT KAR! · desi focus havaldar</div>
+  </div>
+  <div class="stats">
+    <div>STRIKES <span id="strikes">0</span>/3</div>
+    <div class="muted">LOG KYA KAHENGE? aaj <span id="today">0</span> baar bhaage</div>
+    <div class="muted">FOCUS <span id="focus">00:00</span></div>
+  </div>
+</header>
+
+<main>
+  <div id="status">OFF DUTY. Open your work below, then report for duty.</div>
+  <div class="bar">
+    <button id="duty" class="primary">REPORT FOR DUTY</button>
+    <button id="pip" title="Chrome/Edge: a small always-on-top guard that floats over your other apps">FLOAT GUARD ON TOP</button>
+    <button id="settings">SETTINGS</button>
+    <span class="muted" style="font-size:14px">Leave this tab and he notices. Audio keeps shouting from the background.</span>
+  </div>
+
+  <div class="bar tabs">
+    <span class="pix" style="font-size:22px">DUTY POST:</span>
+    <button data-tab="notes" class="active">NOTES</button>
+    <button data-tab="pdf">PDF</button>
+    <button data-tab="youtube">YOUTUBE LECTURE</button>
+  </div>
+  <div class="post">
+    <textarea id="notes" placeholder="Padhai yahin hogi. Notes likho, code paste karo, essay likho... (saved in this browser)"></textarea>
+    <div id="pdfPane" class="hidden empty"><div>Open a PDF to study it here.<br><br><input type="file" id="pdfFile" accept="application/pdf"></div></div>
+    <div id="ytPane" class="hidden empty"><div>Paste a YouTube lecture link.<br><br><input id="ytUrl" placeholder="https://www.youtube.com/watch?v=..."><br><br><button id="ytGo">LOAD</button></div></div>
+  </div>
+
+  <div class="levels">
+    <div style="border-color:var(--l1)"><b style="color:var(--l1)">1 · SAAVDHAN!</b>Leave the tab: FAAAA!, a stern warning in your language.</div>
+    <div style="border-color:var(--l2)"><b style="color:var(--l2)">2 · RUK JA, NALAYAK!</b>Cat laugh, a disappointed sigh, the photo you "registered" in a marigold frame, and the family WhatsApp group finds out.</div>
+    <div style="border-color:var(--l3)"><b style="color:var(--l3)">3 · KHATRA! KHATRA!</b>Metal pipe, shouting, cooker siti, flying chappal, your coding agent held hostage, and "should I call your mummy?". Ends only with "sorry mummy".</div>
+  </div>
+</main>
+
+<footer class="muted">
+  Voices, taunts, translation and speech recognition by <a href="https://www.sarvam.ai/" target="_blank" rel="noopener">Sarvam AI</a>.
+  Your key, photo and notes stay in this browser. Windows desktop app and source: <a href="https://github.com/BbsvgFace/Chodbak" target="_blank" rel="noopener">github.com/BbsvgFace/Chodbak</a>.
+</footer>
+
+<div id="overlay" class="overlay hidden"></div>
+<div id="toasts" class="toasts"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

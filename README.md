@@ -1,20 +1,46 @@
 # CHODBAK / Chodi mat kar
 
-A Windows pixel-art focus patrol. Python + `sarvamai`; no other dependencies.
+A desi pixel-art focus watchdog for Windows. Leave the apps you're meant to be working in and a strict desi havaldar shouts at you, out loud, in your own language (12 Indian languages + English, voiced by [Sarvam AI](https://www.sarvam.ai/)).
 
-1. Save your Sarvam key in `.env` as `SARVAM_API_KEY=...`.
-2. Run `py chodbak_codex.py` (or use your installed Python executable) in a normal Windows session with internet access.
-3. Choose your language first, then a local PNG/GIF photo, then app process names or window-title fragments.
-4. Click **Report for duty**. Preparation makes one chat request and three text-to-speech requests; these use API credits. Then open a watched window to arm tracking.
-5. Each departure escalates: spoken warning, spoken roast, then three popups with a photo reveal, fictional pixel-agent countdown, and the translated **Should I call your mom?** as the final spoken taunt.
-6. Type **sorry mummy** in any third-level popup and press Enter to clear everything and end the session. **Emergency Stop**, Escape while a Chodbak window has focus, or closing the main window also stops the session and audio.
+## Download (Windows 10/11)
 
-App rules match process names exactly, with optional `.exe`. Title rules match fragments. Any rule can allow a window. For a specific browser tab, enter its title fragment and leave the browser app out of the app rules. Warnings follow a switch; transitions shorter than the 350 ms polling interval can be missed. The watchdog's own controls and unreadable processes are ignored.
+1. **[Download Chodbak.exe](https://github.com/BbsvgFace/Chodbak/raw/main/download/Chodbak.exe)** (or open the `download` folder above and click *Download raw file*).
+2. Put it in its own folder, e.g. `Documents\Chodbak`. Your settings are saved next to it.
+3. Double-click it. Windows SmartScreen may say *"Windows protected your PC"* because the exe isn't code-signed: click **More info → Run anyway**. Some antivirus tools also flag PyInstaller apps by mistake; the full source is in this repo if you'd rather run that.
+4. First run asks for:
+   - your **Sarvam API key**: free at [dashboard.sarvam.ai](https://dashboard.sarvam.ai) → *API Keys*. It's saved only in `.env` next to the exe.
+   - the **language you speak at home**
+   - the **apps / tabs to stay in**, comma separated: a window title or exe name, e.g. `Visual Studio Code, Notion, chrome.exe`
+   - a **photo** (it won't say why)
+5. Keep working. Close the black CHODBAK window to stop it.
 
-Each warning starts with a supplied meme sting from `New folder`, capped at two seconds, followed by its Sarvam voice clip. The metal pipe introduces level one, the cat laugh introduces level two, and level three alternates randomly between FAAAA and Ye le. Missing or unsupported SFX are skipped so speech still plays. The third audio repeats at intervals of at least 25 seconds, allowing the full speech clip to finish. Emergency Stop immediately cancels both the sting and pending speech.
+You need internet (Sarvam writes and voices the live taunts) and speakers. A mic is optional.
 
-The 30-second agent countdown is fiction: no coding agents or other applications are controlled or terminated. There is no phone calling or microphone capture; the apology is typed. PNG/GIF photos stay in memory, window titles stay local, and generated audio stays in temporary local WAV files until the app closes. Sarvam receives only the chosen language/persona prompts and generated speech text.
+## What happens
 
-`py -m unittest -v test_chodbak.py` runs isolated tests with mocked Sarvam clients; it makes no API calls. `py chat.py` makes the original short live hello call using the environment or `.env`.
+| Strike | What you get |
+|---|---|
+| 1 · SAAVDHAN! | Pixel warning, *FAAAA!*, spoken taunt |
+| 2 · RUK JA, NALAYAK! | Cat laugh, your photo in a marigold frame, "disappointed hain tujhse", fake family WhatsApp gossip (*ye le*) |
+| 3 · KHATRA! KHATRA! | Metal pipe, drags you back to work, cooker whistle, flying chappal, threatens your coding agent (a joke: nothing is ever closed), then *"should I call your mummy?"* in your language with a fake call |
 
-API references: [Chat V1](https://docs.sarvam.ai/api-reference/chat/chat-completions-v1), [Text to speech](https://docs.sarvam.ai/api-reference/text-to-speech/convert).
+Strike 3 only ends when you say **"sorry mummy"** into the mic (or type it if there's no mic). While you stay away it keeps nagging with fresh pre-recorded regional taunts. Stay focused for 25 minutes straight and you earn a chai break.
+
+## Run from source
+
+```
+pip install sarvamai
+python chodbak.py                 # first run asks everything, like the exe
+python chodbak.py --test 3        # preview a strike
+python chodbak.py --setup         # redo the questions
+python chodbak.py --make-taunts   # re-record the regional taunt bank in taunts/ (uses API credits)
+python build_exe.py               # rebuild download/Chodbak.exe (needs: pip install pyinstaller)
+```
+
+Put your key in `.env` as `SARVAM_API_KEY=...`, or let the first run ask for it. `.env`, your photo and your preferences are git-ignored.
+
+## Alternative version (`chodbak_codex.py`)
+
+A settings-window version made in a parallel session: choose language, a PNG/GIF photo, and app process names or title fragments, then click **Report for duty**. It prepares one chat request and three voice clips per session; strike 3 opens three popups (photo, a fictional "Agent 404" countdown, the translated *Should I call your mom?*) and ends when you type **sorry mummy**. Its meme stings are read from a local `New folder` that isn't in this repo, so it runs without them here. `python -m unittest -v test_chodbak.py` tests it with mocked Sarvam clients.
+
+API references: [Chat](https://docs.sarvam.ai/api-reference/chat/chat-completions-v1), [Text to speech](https://docs.sarvam.ai/api-reference/text-to-speech/convert), [Speech to text](https://docs.sarvam.ai/api-reference/speech-to-text/transcribe), [Translate](https://docs.sarvam.ai/api-reference/text/translate).
